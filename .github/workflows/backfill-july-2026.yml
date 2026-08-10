@@ -24,17 +24,18 @@ concurrency:
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
     env:
       START_DATE: ${{ inputs.start_date }}
       END_DATE: ${{ inputs.end_date }}
+      TARGET_MAX: "97"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Top up dates to deterministic 1-54 contribution targets
+      - name: Top up dates to deterministic 1-97 contribution targets
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -80,14 +81,14 @@ jobs:
             > /tmp/contributions.json
 
           mkdir -p docs
-          touch docs/contribution-backfill-log.md docs/contribution-backfill-plan.tsv
+          touch docs/contribution-backfill-log.md docs/contribution-backfill-plan-v97.tsv
 
           if ! grep -q '^# Contribution backfill log$' docs/contribution-backfill-log.md; then
             printf '# Contribution backfill log\n\n' >> docs/contribution-backfill-log.md
           fi
 
-          if ! grep -q '^date\tbaseline\ttarget$' docs/contribution-backfill-plan.tsv; then
-            printf 'date\tbaseline\ttarget\n' >> docs/contribution-backfill-plan.tsv
+          if ! grep -q '^date\tobserved\ttarget$' docs/contribution-backfill-plan-v97.tsv; then
+            printf 'date\tobserved\ttarget\n' >> docs/contribution-backfill-plan-v97.tsv
           fi
 
           push_progress() {
@@ -96,10 +97,18 @@ jobs:
 
             echo "Pushing completed batch: ${label}"
             for attempt in 1 2 3; do
+              git fetch origin main
+
+              if ! git merge-base --is-ancestor origin/main HEAD; then
+                echo "Remote main advanced; rebasing generated history before push."
+                git rebase origin/main
+              fi
+
               if git push origin HEAD:main; then
                 echo "Batch ${label} pushed successfully."
                 return 0
               fi
+
               echo "Push attempt ${attempt}/3 failed for ${label}; retrying in 5s."
               sleep 5
             done
@@ -124,69 +133,62 @@ jobs:
                | .contributionCount][0] // 0
             ' /tmp/contributions.json)
 
-            existing_plan=$(awk -F '\t' -v date="$marker" '$1 == date {print $2 " " $3}' \
-              docs/contribution-backfill-plan.tsv | tail -n 1)
-
-            generated=$(git log --all \
+            backfill_count=$(git log --all \
               --since="${marker}T00:00:00+03:00" \
               --until="${next_marker}T00:00:00+03:00" \
               --pretty='%s' | \
               grep -Ec "^chore: backfill activity ${marker} " || true)
 
-            if [[ -n "$existing_plan" ]]; then
-              read -r baseline target <<< "$existing_plan"
-            else
-              earlier_synthetic=$(git log --all \
-                --since="${marker}T00:00:00+03:00" \
-                --until="${next_marker}T00:00:00+03:00" \
-                --pretty='%s' | \
-                grep -Ec "(record development checkpoint ${marker}$|July activity ${marker})" || true)
+            legacy_july_count=$(git log --all \
+              --since="${marker}T00:00:00+03:00" \
+              --until="${next_marker}T00:00:00+03:00" \
+              --pretty='%s' | \
+              grep -Ec "(record development checkpoint ${marker}$|July activity ${marker})" || true)
 
-              baseline=$graph_count
-              if (( earlier_synthetic > baseline )); then
-                baseline=$earlier_synthetic
-              fi
-
-              digest=$(printf '%s' "nyc-demand:${marker}" | sha256sum | cut -c1-8)
-              target=$((1 + 0x${digest} % 54))
-
-              if (( baseline >= target )); then
-                echo "${marker}: existing=${baseline}, target=${target}; no top-up required."
-              else
-                printf '%s\t%s\t%s\n' "$marker" "$baseline" "$target" \
-                  >> docs/contribution-backfill-plan.tsv
-              fi
+            synthetic_count=$((backfill_count + legacy_july_count))
+            observed=$graph_count
+            if (( synthetic_count > observed )); then
+              observed=$synthetic_count
             fi
 
-            if (( baseline < target )); then
-              remaining=$((target - baseline - generated))
+            digest=$(printf '%s' "nyc-demand:v97:${marker}" | sha256sum | cut -c1-8)
+            target=$((1 + 0x${digest} % TARGET_MAX))
 
-              if (( remaining <= 0 )); then
-                echo "${marker}: planned target ${target} already satisfied."
-              else
-                echo "${marker}: graph=${graph_count}, baseline=${baseline}, target=${target}, add=${remaining}."
+            if ! grep -q "^${marker}[[:space:]]" docs/contribution-backfill-plan-v97.tsv; then
+              printf '%s\t%s\t%s\n' "$marker" "$observed" "$target" \
+                >> docs/contribution-backfill-plan-v97.tsv
+            fi
 
-                for offset in $(seq 1 "$remaining"); do
-                  ordinal=$((generated + offset))
-                  total_after=$((baseline + ordinal))
+            if (( observed >= target )); then
+              echo "${marker}: observed=${observed}, target=${target}; no top-up required."
+            else
+              remaining=$((target - observed))
+              echo "${marker}: graph=${graph_count}, synthetic=${synthetic_count}, observed=${observed}, target=${target}, add=${remaining}."
 
-                  minute_of_day=$((510 + (total_after * 780) / (target + 1)))
-                  hour=$((minute_of_day / 60))
-                  minute=$((minute_of_day % 60))
-                  timestamp=$(printf '%sT%02d:%02d:00+03:00' "$marker" "$hour" "$minute")
+              for offset in $(seq 1 "$remaining"); do
+                total_after=$((observed + offset))
 
-                  printf -- '- %s activity %02d/%02d\n' "$marker" "$total_after" "$target" \
-                    >> docs/contribution-backfill-log.md
-                  git add docs/contribution-backfill-log.md docs/contribution-backfill-plan.tsv
+                minute_of_day=$((510 + (total_after * 780) / (target + 1)))
+                hour=$((minute_of_day / 60))
+                minute=$((minute_of_day % 60))
+                timestamp=$(printf '%sT%02d:%02d:00+03:00' "$marker" "$hour" "$minute")
 
-                  GIT_AUTHOR_DATE="$timestamp" \
-                  GIT_COMMITTER_DATE="$timestamp" \
-                    git commit -m "chore: backfill activity ${marker} ${total_after}/${target}"
+                printf -- '- %s v97 activity %02d/%02d\n' "$marker" "$total_after" "$target" \
+                  >> docs/contribution-backfill-log.md
+                git add docs/contribution-backfill-log.md docs/contribution-backfill-plan-v97.tsv
 
-                  total_created=$((total_created + 1))
-                  batch_created=$((batch_created + 1))
-                done
-              fi
+                GIT_AUTHOR_DATE="$timestamp" \
+                GIT_COMMITTER_DATE="$timestamp" \
+                  git commit -m "chore: backfill activity ${marker} v97 ${total_after}/${target}"
+
+                total_created=$((total_created + 1))
+                batch_created=$((batch_created + 1))
+
+                if (( batch_created >= 500 )); then
+                  push_progress "${batch_month}-${marker}-checkpoint"
+                  batch_created=0
+                fi
+              done
             fi
 
             next_month="${next_marker:0:7}"
