@@ -7,7 +7,6 @@ import polars as pl
 
 from nyc_demand.config import load_yaml
 
-
 DEFAULT_CONFIG = "configs/data.yaml"
 
 

@@ -4,7 +4,6 @@ from collections.abc import Iterable
 
 import polars as pl
 
-
 DEFAULT_LAGS = (1, 2, 3, 6, 12, 24, 48, 72, 168)
 DEFAULT_WINDOWS = (3, 6, 12, 24, 72, 168)
 
