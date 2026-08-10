@@ -7,7 +7,6 @@ import httpx
 
 from nyc_demand.config import ensure_directory, load_yaml
 
-
 DEFAULT_CONFIG = "configs/data.yaml"
 CHUNK_SIZE = 1024 * 1024
 

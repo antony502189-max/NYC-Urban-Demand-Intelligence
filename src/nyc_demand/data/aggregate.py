@@ -8,7 +8,6 @@ import polars as pl
 
 from nyc_demand.data.quality import DEFAULT_CONFIG, clean_trips
 
-
 READ_COLUMNS = [
     "tpep_pickup_datetime",
     "tpep_dropoff_datetime",

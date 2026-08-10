@@ -6,7 +6,6 @@ from dataclasses import dataclass
 import numpy as np
 import polars as pl
 
-
 NON_FEATURE_COLUMNS = frozenset({"timestamp", "forecast_timestamp", "demand", "target_demand"})
 
 

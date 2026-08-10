@@ -10,7 +10,6 @@ from lightgbm import LGBMRegressor
 from nyc_demand.config import load_yaml
 from nyc_demand.models.dataset import build_feature_matrix, build_training_matrix
 
-
 DEFAULT_MODEL_CONFIG = "configs/model.yaml"
 
 
