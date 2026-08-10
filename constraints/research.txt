@@ -1,0 +1,19 @@
+# Resolved Python 3.11 research environment used by GitHub Actions.
+# Keep benchmark runs reproducible; update intentionally after CI validation.
+httpx==0.28.1
+numpy==2.4.6
+polars==1.43.2
+pyarrow==23.0.1
+pydantic==2.13.4
+pydantic-settings==2.15.0
+PyYAML==6.0.3
+scikit-learn==1.9.0
+lightgbm==4.7.0
+optuna==4.9.0
+shap==0.51.0
+fastapi==0.141.1
+uvicorn==0.52.1
+pytest==8.4.2
+pytest-cov==6.3.0
+ruff==0.16.2
+mypy==1.20.2
