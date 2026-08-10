@@ -1,0 +1,29 @@
+dataset:
+  source: nyc_tlc
+  taxi_type: yellow
+  url_template: https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_{year}-{month:02d}.parquet
+
+paths:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  feature_dir: data/features
+
+validation:
+  required_columns:
+    - tpep_pickup_datetime
+    - tpep_dropoff_datetime
+    - PULocationID
+    - DOLocationID
+    - trip_distance
+    - total_amount
+  min_zone_id: 1
+  max_zone_id: 265
+  min_trip_distance: 0.0
+  max_trip_distance: 200.0
+  max_trip_duration_hours: 8.0
+
+aggregation:
+  frequency: 1h
+  timestamp_column: tpep_pickup_datetime
+  zone_column: PULocationID
+  target_column: demand
