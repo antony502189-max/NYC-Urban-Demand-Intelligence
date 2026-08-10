@@ -42,10 +42,15 @@ def train_lightgbm(
     train: pl.DataFrame,
     *,
     feature_columns: tuple[str, ...] | None = None,
+    target_column: str = "demand",
     params: dict[str, Any] | None = None,
 ) -> FittedDemandModel:
     """Train a LightGBM Poisson demand model from a leakage-safe feature frame."""
-    matrix = build_training_matrix(train, feature_columns=feature_columns)
+    matrix = build_training_matrix(
+        train,
+        feature_columns=feature_columns,
+        target_column=target_column,
+    )
     model_params = load_lightgbm_params() if params is None else dict(params)
     model_params.setdefault("verbosity", -1)
 
