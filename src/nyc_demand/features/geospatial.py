@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import polars as pl
 
-
 BOROUGHS = ("Bronx", "Brooklyn", "Manhattan", "Queens", "Staten Island", "EWR", "Unknown")
 SERVICE_ZONES = ("Boro Zone", "Yellow Zone", "Airports", "Unknown")
 
