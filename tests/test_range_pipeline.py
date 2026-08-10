@@ -47,3 +47,32 @@ def test_merge_hourly_demand_collapses_overlapping_timestamp_zone_keys() -> None
         start + timedelta(hours=2),
     ]
     assert merged["demand"].to_list() == [2, 7, 5]
+
+
+def test_merge_hourly_demand_restores_zero_rows_for_zone_gaps() -> None:
+    start = datetime(2026, 1, 1, 0, 0)
+    left = pl.DataFrame(
+        {
+            "timestamp": [start, start + timedelta(hours=1)],
+            "zone_id": [1, 1],
+            "demand": [4, 2],
+        }
+    )
+    right = pl.DataFrame(
+        {
+            "timestamp": [start + timedelta(hours=2)],
+            "zone_id": [2],
+            "demand": [7],
+        }
+    )
+
+    merged = merge_hourly_demand([left, right])
+
+    assert merged.height == 6
+    zone_two = merged.filter(pl.col("zone_id") == 2)
+    assert zone_two["timestamp"].to_list() == [
+        start,
+        start + timedelta(hours=1),
+        start + timedelta(hours=2),
+    ]
+    assert zone_two["demand"].to_list() == [0, 0, 7]
