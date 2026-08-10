@@ -30,7 +30,7 @@ jobs:
       END_DATE: ${{ inputs.end_date }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -90,8 +90,28 @@ jobs:
             printf 'date\tbaseline\ttarget\n' >> docs/contribution-backfill-plan.tsv
           fi
 
+          push_progress() {
+            local label="$1"
+            local attempt
+
+            echo "Pushing completed batch: ${label}"
+            for attempt in 1 2 3; do
+              if git push origin HEAD:main; then
+                echo "Batch ${label} pushed successfully."
+                return 0
+              fi
+              echo "Push attempt ${attempt}/3 failed for ${label}; retrying in 5s."
+              sleep 5
+            done
+
+            echo "Unable to push batch ${label} after 3 attempts."
+            return 1
+          }
+
           current="$START_DATE"
           total_created=0
+          batch_created=0
+          batch_month="${START_DATE:0:7}"
 
           while [[ "$current" < "$END_DATE" || "$current" == "$END_DATE" ]]; do
             marker="$current"
@@ -116,8 +136,6 @@ jobs:
             if [[ -n "$existing_plan" ]]; then
               read -r baseline target <<< "$existing_plan"
             else
-              # Account for earlier July backfill commits even when GitHub's
-              # profile contribution calendar has not refreshed yet.
               earlier_synthetic=$(git log --all \
                 --since="${marker}T00:00:00+03:00" \
                 --until="${next_marker}T00:00:00+03:00" \
@@ -129,55 +147,61 @@ jobs:
                 baseline=$earlier_synthetic
               fi
 
-              # Stable pseudo-random target in the inclusive range 1..54.
               digest=$(printf '%s' "nyc-demand:${marker}" | sha256sum | cut -c1-8)
               target=$((1 + 0x${digest} % 54))
 
               if (( baseline >= target )); then
                 echo "${marker}: existing=${baseline}, target=${target}; no top-up required."
-                current="$next_marker"
-                continue
-              fi
-            fi
-
-            remaining=$((target - baseline - generated))
-            if (( remaining <= 0 )); then
-              echo "${marker}: planned target ${target} already satisfied."
-              current="$next_marker"
-              continue
-            fi
-
-            echo "${marker}: graph=${graph_count}, baseline=${baseline}, target=${target}, add=${remaining}."
-
-            for offset in $(seq 1 "$remaining"); do
-              ordinal=$((generated + offset))
-              total_after=$((baseline + ordinal))
-
-              # Spread generated commits across 08:30-21:30 local time.
-              minute_of_day=$((510 + (total_after * 780) / (target + 1)))
-              hour=$((minute_of_day / 60))
-              minute=$((minute_of_day % 60))
-              timestamp=$(printf '%sT%02d:%02d:00+03:00' "$marker" "$hour" "$minute")
-
-              if (( ordinal == 1 )) && [[ -z "$existing_plan" ]]; then
+              else
                 printf '%s\t%s\t%s\n' "$marker" "$baseline" "$target" \
                   >> docs/contribution-backfill-plan.tsv
-                git add docs/contribution-backfill-plan.tsv
               fi
+            fi
 
-              printf -- '- %s activity %02d/%02d\n' "$marker" "$total_after" "$target" \
-                >> docs/contribution-backfill-log.md
-              git add docs/contribution-backfill-log.md
+            if (( baseline < target )); then
+              remaining=$((target - baseline - generated))
 
-              GIT_AUTHOR_DATE="$timestamp" \
-              GIT_COMMITTER_DATE="$timestamp" \
-                git commit -m "chore: backfill activity ${marker} ${total_after}/${target}"
+              if (( remaining <= 0 )); then
+                echo "${marker}: planned target ${target} already satisfied."
+              else
+                echo "${marker}: graph=${graph_count}, baseline=${baseline}, target=${target}, add=${remaining}."
 
-              total_created=$((total_created + 1))
-            done
+                for offset in $(seq 1 "$remaining"); do
+                  ordinal=$((generated + offset))
+                  total_after=$((baseline + ordinal))
+
+                  minute_of_day=$((510 + (total_after * 780) / (target + 1)))
+                  hour=$((minute_of_day / 60))
+                  minute=$((minute_of_day % 60))
+                  timestamp=$(printf '%sT%02d:%02d:00+03:00' "$marker" "$hour" "$minute")
+
+                  printf -- '- %s activity %02d/%02d\n' "$marker" "$total_after" "$target" \
+                    >> docs/contribution-backfill-log.md
+                  git add docs/contribution-backfill-log.md docs/contribution-backfill-plan.tsv
+
+                  GIT_AUTHOR_DATE="$timestamp" \
+                  GIT_COMMITTER_DATE="$timestamp" \
+                    git commit -m "chore: backfill activity ${marker} ${total_after}/${target}"
+
+                  total_created=$((total_created + 1))
+                  batch_created=$((batch_created + 1))
+                done
+              fi
+            fi
+
+            next_month="${next_marker:0:7}"
+            if [[ "$next_month" != "$batch_month" || "$marker" == "$END_DATE" ]]; then
+              if (( batch_created > 0 )); then
+                push_progress "$batch_month"
+              else
+                echo "Batch ${batch_month}: nothing new to push."
+              fi
+              batch_month="$next_month"
+              batch_created=0
+            fi
 
             current="$next_marker"
           done
 
-          echo "Created ${total_created} dated commits."
-          git push origin HEAD:main
+          echo "Created ${total_created} dated commits in total."
+          echo "Backfill completed successfully."
