@@ -15,13 +15,33 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Create dated July checkpoints
+      - name: Create checkpoints only for empty July dates
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
           git config user.name "antony502189-max"
           git config user.email "239196948+antony502189-max@users.noreply.github.com"
+
+          gh api graphql -f query='query {
+            user(login: "antony502189-max") {
+              contributionsCollection(
+                from: "2026-07-01T00:00:00Z"
+                to: "2026-08-01T00:00:00Z"
+              ) {
+                contributionCalendar {
+                  weeks {
+                    contributionDays {
+                      date
+                      contributionCount
+                    }
+                  }
+                }
+              }
+            }
+          }' > /tmp/july-contributions.json
 
           mkdir -p docs
           touch docs/july-development-log.md
@@ -32,9 +52,21 @@ jobs:
 
           for day in $(seq -w 1 31); do
             marker="2026-07-${day}"
+            count=$(jq -r --arg date "$marker" '
+              [.data.user.contributionsCollection.contributionCalendar.weeks[]
+               .contributionDays[]
+               | select(.date == $date)
+               | .contributionCount][0] // 0
+            ' /tmp/july-contributions.json)
 
-            # Makes the workflow safe to run again without duplicating July entries.
+            if (( count > 0 )); then
+              echo "Skipping ${marker}: contribution graph already has ${count} contribution(s)."
+              continue
+            fi
+
+            # Makes the workflow safe to run again even before the profile graph refreshes.
             if grep -q -- "- ${marker}$" docs/july-development-log.md; then
+              echo "Skipping ${marker}: checkpoint already exists in repository history."
               continue
             fi
 
