@@ -36,13 +36,16 @@ def add_rolling_features(
 ) -> pl.DataFrame:
     expressions: list[pl.Expr] = []
     for window in windows:
-        history = pl.col("demand").shift(1).over("zone_id")
         expressions.extend(
             [
-                history.rolling_mean(window_size=window, min_samples=1)
+                pl.col("demand")
+                .shift(1)
+                .rolling_mean(window_size=window, min_samples=1)
                 .over("zone_id")
                 .alias(f"demand_roll_mean_{window}h"),
-                history.rolling_std(window_size=window, min_samples=2)
+                pl.col("demand")
+                .shift(1)
+                .rolling_std(window_size=window, min_samples=2)
                 .over("zone_id")
                 .alias(f"demand_roll_std_{window}h"),
             ]
