@@ -19,16 +19,37 @@ READ_COLUMNS = [
 ]
 
 
+def _complete_hourly_grid(counts: pl.DataFrame) -> pl.DataFrame:
+    start = counts["timestamp"].min()
+    end = counts["timestamp"].max()
+    if start is None or end is None:
+        raise ValueError("Unable to determine aggregation time range")
+
+    hours = pl.DataFrame(
+        {"timestamp": pl.datetime_range(start, end, interval="1h", eager=True)}
+    )
+    zones = counts.select("zone_id").unique().sort("zone_id")
+    grid = hours.join(zones, how="cross")
+
+    return (
+        grid.join(counts, on=["timestamp", "zone_id"], how="left")
+        .with_columns(pl.col("demand").fill_null(0).cast(pl.Int32))
+        .sort(["timestamp", "zone_id"])
+    )
+
+
 def aggregate_hourly_demand(
     frame: pl.DataFrame,
     *,
     config_path: str | Path = DEFAULT_CONFIG,
+    complete_grid: bool = True,
 ) -> tuple[pl.DataFrame, dict[str, int | float]]:
+    """Build an hourly pickup-demand mart with explicit zero-demand hours."""
     cleaned, report = clean_trips(frame, config_path)
     if cleaned.is_empty():
         raise ValueError("No valid trip rows remain after quality checks")
 
-    demand = (
+    counts = (
         cleaned.with_columns(
             pl.col("tpep_pickup_datetime").dt.truncate("1h").alias("timestamp"),
             pl.col("PULocationID").cast(pl.Int16).alias("zone_id"),
@@ -37,6 +58,8 @@ def aggregate_hourly_demand(
         .agg(pl.len().cast(pl.Int32).alias("demand"))
         .sort(["timestamp", "zone_id"])
     )
+
+    demand = _complete_hourly_grid(counts) if complete_grid else counts
     return demand, report.to_dict()
 
 
