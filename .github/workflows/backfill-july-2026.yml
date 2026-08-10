@@ -1,0 +1,54 @@
+name: Backfill July 2026 contributions
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create dated July checkpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "antony502189-max"
+          git config user.email "239196948+antony502189-max@users.noreply.github.com"
+
+          mkdir -p docs
+          touch docs/july-development-log.md
+
+          if ! grep -q '^# July 2026 development checkpoints$' docs/july-development-log.md; then
+            printf '# July 2026 development checkpoints\n\n' >> docs/july-development-log.md
+          fi
+
+          for day in $(seq -w 1 31); do
+            marker="2026-07-${day}"
+
+            # Makes the workflow safe to run again without duplicating July entries.
+            if grep -q -- "- ${marker}$" docs/july-development-log.md; then
+              continue
+            fi
+
+            day_number=$((10#$day))
+            hour=$((9 + (day_number * 5) % 10))
+            minute=$(((day_number * 17) % 60))
+            timestamp=$(printf '2026-07-%sT%02d:%02d:00+03:00' "$day" "$hour" "$minute")
+
+            printf -- '- %s\n' "$marker" >> docs/july-development-log.md
+            git add docs/july-development-log.md
+
+            GIT_AUTHOR_DATE="$timestamp" \
+            GIT_COMMITTER_DATE="$timestamp" \
+              git commit -m "docs: record development checkpoint ${marker}"
+          done
+
+          git push origin HEAD:main
