@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import polars as pl
 
-
 REQUIRED_DEMAND_COLUMNS = frozenset({"timestamp", "zone_id", "demand"})
 
 
@@ -19,6 +18,9 @@ def demand_overview(frame: pl.DataFrame) -> dict[str, int | float | str]:
     _validate_demand_frame(frame)
     start = frame["timestamp"].min()
     end = frame["timestamp"].max()
+    zero_share = frame.select(
+        (pl.col("demand") == 0).cast(pl.Float64).mean().alias("zero_share")
+    ).item()
     return {
         "rows": frame.height,
         "zones": frame["zone_id"].n_unique(),
@@ -26,7 +28,7 @@ def demand_overview(frame: pl.DataFrame) -> dict[str, int | float | str]:
         "end": str(end),
         "total_demand": int(frame["demand"].sum()),
         "mean_hourly_zone_demand": float(frame["demand"].mean()),
-        "zero_demand_share": float((frame["demand"] == 0).mean()),
+        "zero_demand_share": float(zero_share),
     }
 
 
