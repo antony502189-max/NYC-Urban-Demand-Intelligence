@@ -1,0 +1,39 @@
+forecast:
+  horizons_hours: [1, 6, 24]
+  target: demand
+
+features:
+  lags_hours: [1, 2, 3, 6, 12, 24, 48, 72, 168]
+  rolling_windows_hours: [3, 6, 12, 24, 72, 168]
+  calendar:
+    - hour
+    - day_of_week
+    - day_of_month
+    - month
+    - is_weekend
+
+validation:
+  strategy: expanding_window
+  train_days: 90
+  validation_days: 14
+  step_days: 14
+  minimum_folds: 3
+
+metrics:
+  - mae
+  - rmse
+  - wape
+  - smape
+
+baseline:
+  seasonal_period_hours: 168
+
+lightgbm:
+  objective: poisson
+  learning_rate: 0.05
+  n_estimators: 1000
+  num_leaves: 63
+  max_depth: -1
+  subsample: 0.9
+  colsample_bytree: 0.9
+  random_state: 42
