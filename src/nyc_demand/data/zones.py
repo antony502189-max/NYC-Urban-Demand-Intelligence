@@ -7,10 +7,7 @@ import polars as pl
 
 from nyc_demand.config import ensure_directory
 
-
-TAXI_ZONE_LOOKUP_URL = (
-    "https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv"
-)
+TAXI_ZONE_LOOKUP_URL = "https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv"
 REQUIRED_ZONE_COLUMNS = ("LocationID", "Borough", "Zone", "service_zone")
 
 
