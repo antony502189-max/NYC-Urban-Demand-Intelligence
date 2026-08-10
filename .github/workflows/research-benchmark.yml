@@ -38,6 +38,7 @@ jobs:
       FEATURES_PATH: data/features/research-features.parquet
       MODEL_DIR: artifacts/models/research
       REPORT_DIR: reports/research
+      PYTHONUNBUFFERED: "1"
 
     steps:
       - name: Checkout
@@ -49,73 +50,105 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Install research dependencies
+      - name: Prepare diagnostics directory
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[ml,api,dev]"
+          mkdir -p "$REPORT_DIR"
+          python --version | tee "$REPORT_DIR/python-version.txt"
+          df -h | tee "$REPORT_DIR/disk-before.txt"
+          free -h | tee "$REPORT_DIR/memory-before.txt"
+
+      - name: Install pinned research dependencies
+        run: |
+          set -o pipefail
+          python -m pip install --upgrade pip 2>&1 | tee "$REPORT_DIR/pip-bootstrap.log"
+          python -m pip install -c constraints/research.txt -e ".[ml,api,dev]" 2>&1 | tee "$REPORT_DIR/pip-install.log"
+          python -m pip check 2>&1 | tee "$REPORT_DIR/pip-check.log"
+          python -m pip freeze | sort > "$REPORT_DIR/environment.txt"
 
       - name: Build multi-month demand dataset
         run: |
-          python scripts/build_dataset.py \
+          set -o pipefail
+          python -u scripts/build_dataset.py \
             --start "$START_MONTH" \
             --end "$END_MONTH" \
-            --output "$DATASET_PATH"
+            --output "$DATASET_PATH" \
+            2>&1 | tee "$REPORT_DIR/build-dataset.log"
 
       - name: Download and validate taxi-zone lookup
         run: |
-          python -c "from nyc_demand.data.zones import download_zone_lookup; print(download_zone_lookup())"
+          set -o pipefail
+          python -u -c "from nyc_demand.data.zones import download_zone_lookup; print(download_zone_lookup())" \
+            2>&1 | tee "$REPORT_DIR/zone-lookup.log"
 
       - name: Generate deterministic EDA report
         run: |
-          mkdir -p "$REPORT_DIR"
-          python scripts/generate_eda_report.py \
+          set -o pipefail
+          python -u scripts/generate_eda_report.py \
             --input "$DATASET_PATH" \
             --zone-lookup data/reference/taxi_zone_lookup.csv \
-            --output "$REPORT_DIR/eda.json"
+            --output "$REPORT_DIR/eda.json" \
+            2>&1 | tee "$REPORT_DIR/eda.log"
 
       - name: Materialize leakage-safe features
         run: |
-          python scripts/build_features.py \
+          set -o pipefail
+          python -u scripts/build_features.py \
             --input "$DATASET_PATH" \
-            --output "$FEATURES_PATH"
+            --output "$FEATURES_PATH" \
+            2>&1 | tee "$REPORT_DIR/features.log"
 
       - name: Benchmark model against seasonal naive
         run: |
-          python scripts/benchmark_model.py \
+          set -o pipefail
+          python -u scripts/benchmark_model.py \
             --input "$DATASET_PATH" \
             --horizon "$HORIZON" \
-            --output "$REPORT_DIR/benchmark.json"
+            --output "$REPORT_DIR/benchmark.json" \
+            2>&1 | tee "$REPORT_DIR/benchmark.log"
 
       - name: Train final horizon model
         run: |
-          python scripts/train_model.py \
+          set -o pipefail
+          python -u scripts/train_model.py \
             --input "$DATASET_PATH" \
             --horizon "$HORIZON" \
             --model-dir "$MODEL_DIR" \
-            --report "$REPORT_DIR/training.json"
+            --report "$REPORT_DIR/training.json" \
+            2>&1 | tee "$REPORT_DIR/training.log"
 
       - name: Generate SHAP explanation report
         run: |
-          python scripts/explain_model.py \
+          set -o pipefail
+          python -u scripts/explain_model.py \
             --model-dir "$MODEL_DIR" \
             --features "$FEATURES_PATH" \
             --output "$REPORT_DIR/shap.json" \
             --max-rows 5000 \
-            --top-n 30
+            --top-n 30 \
+            2>&1 | tee "$REPORT_DIR/shap.log"
 
       - name: Render model card from real artifacts
         run: |
-          python scripts/render_model_card.py \
+          set -o pipefail
+          python -u scripts/render_model_card.py \
             --model-dir "$MODEL_DIR" \
             --benchmark "$REPORT_DIR/benchmark.json" \
             --shap "$REPORT_DIR/shap.json" \
-            --output "$REPORT_DIR/model-card.md"
+            --output "$REPORT_DIR/model-card.md" \
+            2>&1 | tee "$REPORT_DIR/model-card.log"
 
-      - name: Publish research artifacts
+      - name: Record final runner resources
+        if: always()
+        run: |
+          df -h > "$REPORT_DIR/disk-after.txt"
+          free -h > "$REPORT_DIR/memory-after.txt"
+
+      - name: Publish research artifacts and failure logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: nyc-demand-${{ inputs.start_month }}-${{ inputs.end_month }}-h${{ inputs.horizon }}
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
           path: |
             reports/research/
