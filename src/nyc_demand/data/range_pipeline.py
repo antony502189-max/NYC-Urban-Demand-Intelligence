@@ -41,7 +41,14 @@ def month_range(start: YearMonth, end: YearMonth) -> list[YearMonth]:
 
 
 def merge_hourly_demand(frames: list[pl.DataFrame]) -> pl.DataFrame:
-    """Merge monthly hourly-demand marts into one unique timestamp-zone table."""
+    """Merge monthly marts and restore a complete timestamp x zone grid.
+
+    A zone can be absent from an individual monthly source when it has no pickups
+    during that month. Downstream lag features are row-based within each zone, so
+    leaving those gaps would silently make non-consecutive hours look adjacent.
+    The merged mart therefore reindexes the union of observed zones over the full
+    hourly range and fills missing demand with zero.
+    """
     if not frames:
         raise ValueError("At least one monthly demand frame is required")
 
@@ -53,15 +60,30 @@ def merge_hourly_demand(frames: list[pl.DataFrame]) -> pl.DataFrame:
                 f"Monthly demand frame {index} is missing columns: {', '.join(missing)}"
             )
 
-    merged = (
+    counts = (
         pl.concat(frames, how="vertical_relaxed")
         .group_by(["timestamp", "zone_id"])
         .agg(pl.col("demand").sum().cast(pl.Int32).alias("demand"))
+    )
+    if counts.is_empty():
+        raise ValueError("Merged demand frame must not be empty")
+
+    start = counts["timestamp"].min()
+    end = counts["timestamp"].max()
+    if start is None or end is None:
+        raise ValueError("Unable to determine merged demand time range")
+
+    hours = pl.DataFrame(
+        {"timestamp": pl.datetime_range(start, end, interval="1h", eager=True)}
+    )
+    zones = counts.select("zone_id").unique().sort("zone_id")
+    grid = hours.join(zones, how="cross")
+
+    return (
+        grid.join(counts, on=["timestamp", "zone_id"], how="left")
+        .with_columns(pl.col("demand").fill_null(0).cast(pl.Int32))
         .sort(["timestamp", "zone_id"])
     )
-    if merged.is_empty():
-        raise ValueError("Merged demand frame must not be empty")
-    return merged
 
 
 def write_merged_demand(frames: list[pl.DataFrame], output_path: str | Path) -> Path:
