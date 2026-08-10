@@ -1,22 +1,40 @@
-name: Backfill July 2026 contributions
+name: Backfill contribution density
 
 on:
   workflow_dispatch:
+    inputs:
+      start_date:
+        description: First date to top up (YYYY-MM-DD)
+        required: true
+        default: "2026-03-01"
+        type: string
+      end_date:
+        description: Last date to top up (YYYY-MM-DD)
+        required: true
+        default: "2026-08-10"
+        type: string
 
 permissions:
   contents: write
 
+concurrency:
+  group: contribution-density-backfill
+  cancel-in-progress: false
+
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
+    env:
+      START_DATE: ${{ inputs.start_date }}
+      END_DATE: ${{ inputs.end_date }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Top up July dates to deterministic 1-27 contribution targets
+      - name: Top up dates to deterministic 1-54 contribution targets
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -26,37 +44,57 @@ jobs:
           git config user.name "antony502189-max"
           git config user.email "239196948+antony502189-max@users.noreply.github.com"
 
-          gh api graphql -f query='query {
-            user(login: "antony502189-max") {
-              contributionsCollection(
-                from: "2026-07-01T00:00:00Z"
-                to: "2026-08-01T00:00:00Z"
-              ) {
-                contributionCalendar {
-                  weeks {
-                    contributionDays {
-                      date
-                      contributionCount
+          if ! date -d "$START_DATE" +%F >/dev/null 2>&1; then
+            echo "Invalid start_date: $START_DATE"
+            exit 2
+          fi
+          if ! date -d "$END_DATE" +%F >/dev/null 2>&1; then
+            echo "Invalid end_date: $END_DATE"
+            exit 2
+          fi
+          if [[ "$END_DATE" < "$START_DATE" ]]; then
+            echo "end_date must not precede start_date"
+            exit 2
+          fi
+
+          graph_from="${START_DATE}T00:00:00Z"
+          graph_to="$(date -d "${END_DATE} +1 day" +%F)T00:00:00Z"
+
+          gh api graphql \
+            -f query='query($from: DateTime!, $to: DateTime!) {
+              user(login: "antony502189-max") {
+                contributionsCollection(from: $from, to: $to) {
+                  contributionCalendar {
+                    weeks {
+                      contributionDays {
+                        date
+                        contributionCount
+                      }
                     }
                   }
                 }
               }
-            }
-          }' > /tmp/july-contributions.json
+            }' \
+            -f from="$graph_from" \
+            -f to="$graph_to" \
+            > /tmp/contributions.json
 
           mkdir -p docs
-          touch docs/july-development-log.md docs/july-contribution-plan.tsv
+          touch docs/contribution-backfill-log.md docs/contribution-backfill-plan.tsv
 
-          if ! grep -q '^# July 2026 development checkpoints$' docs/july-development-log.md; then
-            printf '# July 2026 development checkpoints\n\n' >> docs/july-development-log.md
+          if ! grep -q '^# Contribution backfill log$' docs/contribution-backfill-log.md; then
+            printf '# Contribution backfill log\n\n' >> docs/contribution-backfill-log.md
           fi
 
-          if ! grep -q '^date\tbaseline\ttarget$' docs/july-contribution-plan.tsv; then
-            printf 'date\tbaseline\ttarget\n' >> docs/july-contribution-plan.tsv
+          if ! grep -q '^date\tbaseline\ttarget$' docs/contribution-backfill-plan.tsv; then
+            printf 'date\tbaseline\ttarget\n' >> docs/contribution-backfill-plan.tsv
           fi
 
-          for day in $(seq -w 1 31); do
-            marker="2026-07-${day}"
+          current="$START_DATE"
+          total_created=0
+
+          while [[ "$current" < "$END_DATE" || "$current" == "$END_DATE" ]]; do
+            marker="$current"
             next_marker=$(date -d "${marker} +1 day" +%F)
 
             graph_count=$(jq -r --arg date "$marker" '
@@ -64,39 +102,48 @@ jobs:
                .contributionDays[]
                | select(.date == $date)
                | .contributionCount][0] // 0
-            ' /tmp/july-contributions.json)
+            ' /tmp/contributions.json)
 
-            existing_plan=$(awk -F '\t' -v date="$marker" '$1 == date {print $2 " " $3}' docs/july-contribution-plan.tsv | tail -n 1)
-
-            if [[ -n "$existing_plan" ]]; then
-              read -r baseline target <<< "$existing_plan"
-            else
-              digest=$(printf '%s' "$marker" | sha256sum | cut -c1-8)
-              target=$((1 + 0x${digest} % 27))
-              baseline=$graph_count
-
-              # Do not attempt to rewrite or remove genuine activity when a day
-              # already exceeds the synthetic target.
-              if (( baseline >= target )); then
-                echo "Skipping ${marker}: existing ${baseline}, target ${target}."
-                continue
-              fi
-            fi
-
-            expected_additions=$((target - baseline))
-            if (( expected_additions <= 0 )); then
-              continue
-            fi
+            existing_plan=$(awk -F '\t' -v date="$marker" '$1 == date {print $2 " " $3}' \
+              docs/contribution-backfill-plan.tsv | tail -n 1)
 
             generated=$(git log --all \
               --since="${marker}T00:00:00+03:00" \
               --until="${next_marker}T00:00:00+03:00" \
               --pretty='%s' | \
-              grep -Ec "^(chore: plan July activity ${marker}|chore: log July activity ${marker})" || true)
+              grep -Ec "^chore: backfill activity ${marker} " || true)
 
-            remaining=$((expected_additions - generated))
+            if [[ -n "$existing_plan" ]]; then
+              read -r baseline target <<< "$existing_plan"
+            else
+              # Account for earlier July backfill commits even when GitHub's
+              # profile contribution calendar has not refreshed yet.
+              earlier_synthetic=$(git log --all \
+                --since="${marker}T00:00:00+03:00" \
+                --until="${next_marker}T00:00:00+03:00" \
+                --pretty='%s' | \
+                grep -Ec "(record development checkpoint ${marker}$|July activity ${marker})" || true)
+
+              baseline=$graph_count
+              if (( earlier_synthetic > baseline )); then
+                baseline=$earlier_synthetic
+              fi
+
+              # Stable pseudo-random target in the inclusive range 1..54.
+              digest=$(printf '%s' "nyc-demand:${marker}" | sha256sum | cut -c1-8)
+              target=$((1 + 0x${digest} % 54))
+
+              if (( baseline >= target )); then
+                echo "${marker}: existing=${baseline}, target=${target}; no top-up required."
+                current="$next_marker"
+                continue
+              fi
+            fi
+
+            remaining=$((target - baseline - generated))
             if (( remaining <= 0 )); then
-              echo "${marker}: target ${target} already satisfied by planned commits."
+              echo "${marker}: planned target ${target} already satisfied."
+              current="$next_marker"
               continue
             fi
 
@@ -106,28 +153,31 @@ jobs:
               ordinal=$((generated + offset))
               total_after=$((baseline + ordinal))
 
-              # Spread timestamps across a normal working-day window instead of
-              # assigning every commit the same clock time.
-              minute_of_day=$((540 + (total_after * 720) / (target + 1)))
+              # Spread generated commits across 08:30-21:30 local time.
+              minute_of_day=$((510 + (total_after * 780) / (target + 1)))
               hour=$((minute_of_day / 60))
               minute=$((minute_of_day % 60))
               timestamp=$(printf '%sT%02d:%02d:00+03:00' "$marker" "$hour" "$minute")
 
               if (( ordinal == 1 )) && [[ -z "$existing_plan" ]]; then
-                printf '%s\t%s\t%s\n' "$marker" "$baseline" "$target" >> docs/july-contribution-plan.tsv
-                printf -- '- %s activity %02d/%02d\n' "$marker" "$total_after" "$target" >> docs/july-development-log.md
-                git add docs/july-contribution-plan.tsv docs/july-development-log.md
-                message="chore: plan July activity ${marker} ${total_after}/${target}"
-              else
-                printf -- '- %s activity %02d/%02d\n' "$marker" "$total_after" "$target" >> docs/july-development-log.md
-                git add docs/july-development-log.md
-                message="chore: log July activity ${marker} ${total_after}/${target}"
+                printf '%s\t%s\t%s\n' "$marker" "$baseline" "$target" \
+                  >> docs/contribution-backfill-plan.tsv
+                git add docs/contribution-backfill-plan.tsv
               fi
+
+              printf -- '- %s activity %02d/%02d\n' "$marker" "$total_after" "$target" \
+                >> docs/contribution-backfill-log.md
+              git add docs/contribution-backfill-log.md
 
               GIT_AUTHOR_DATE="$timestamp" \
               GIT_COMMITTER_DATE="$timestamp" \
-                git commit -m "$message"
+                git commit -m "chore: backfill activity ${marker} ${total_after}/${target}"
+
+              total_created=$((total_created + 1))
             done
+
+            current="$next_marker"
           done
 
+          echo "Created ${total_created} dated commits."
           git push origin HEAD:main
