@@ -1,0 +1,233 @@
+name: Backfill pre-March random activity
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: First date to consider (YYYY-MM-DD)
+        required: true
+        default: "2025-08-10"
+        type: string
+      end_date:
+        description: Last date to consider (YYYY-MM-DD)
+        required: true
+        default: "2026-02-28"
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pre-march-random-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      START_DATE: ${{ inputs.start_date }}
+      END_DATE: ${{ inputs.end_date }}
+      TARGET_MAX: "97"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Create deterministic random pre-March activity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "antony502189-max"
+          git config user.email "239196948+antony502189-max@users.noreply.github.com"
+
+          if ! date -d "$START_DATE" +%F >/dev/null 2>&1; then
+            echo "Invalid start_date: $START_DATE"
+            exit 2
+          fi
+          if ! date -d "$END_DATE" +%F >/dev/null 2>&1; then
+            echo "Invalid end_date: $END_DATE"
+            exit 2
+          fi
+          if [[ "$END_DATE" < "$START_DATE" ]]; then
+            echo "end_date must not precede start_date"
+            exit 2
+          fi
+          if [[ "$END_DATE" > "2026-02-28" ]]; then
+            echo "This workflow is intentionally limited to dates before March 2026."
+            exit 2
+          fi
+
+          graph_from="${START_DATE}T00:00:00Z"
+          graph_to="$(date -d "${END_DATE} +1 day" +%F)T00:00:00Z"
+
+          gh api graphql \
+            -f query='query($from: DateTime!, $to: DateTime!) {
+              user(login: "antony502189-max") {
+                contributionsCollection(from: $from, to: $to) {
+                  contributionCalendar {
+                    weeks {
+                      contributionDays {
+                        date
+                        contributionCount
+                      }
+                    }
+                  }
+                }
+              }
+            }' \
+            -f from="$graph_from" \
+            -f to="$graph_to" \
+            > /tmp/pre-march-contributions.json
+
+          mkdir -p docs
+          touch docs/pre-march-random-backfill-log.md docs/pre-march-random-plan.tsv
+
+          if ! grep -q '^# Pre-March random contribution backfill$' docs/pre-march-random-backfill-log.md; then
+            printf '# Pre-March random contribution backfill\n\n' >> docs/pre-march-random-backfill-log.md
+          fi
+
+          if ! grep -q '^date\tactive\tobserved\ttarget$' docs/pre-march-random-plan.tsv; then
+            printf 'date\tactive\tobserved\ttarget\n' >> docs/pre-march-random-plan.tsv
+          fi
+
+          push_progress() {
+            local label="$1"
+            local attempt
+
+            echo "Pushing completed batch: ${label}"
+            for attempt in 1 2 3; do
+              git fetch origin main
+
+              if ! git merge-base --is-ancestor origin/main HEAD; then
+                echo "Remote main advanced; rebasing generated history before push."
+                git rebase --committer-date-is-author-date origin/main
+              fi
+
+              if git push origin HEAD:main; then
+                echo "Batch ${label} pushed successfully."
+                return 0
+              fi
+
+              echo "Push attempt ${attempt}/3 failed for ${label}; retrying in 5s."
+              sleep 5
+            done
+
+            echo "Unable to push batch ${label} after 3 attempts."
+            return 1
+          }
+
+          current="$START_DATE"
+          total_created=0
+          batch_created=0
+          batch_month="${START_DATE:0:7}"
+
+          while [[ "$current" < "$END_DATE" || "$current" == "$END_DATE" ]]; do
+            marker="$current"
+            next_marker=$(date -d "${marker} +1 day" +%F)
+            weekday=$(date -d "$marker" +%u)
+
+            graph_count=$(jq -r --arg date "$marker" '
+              [.data.user.contributionsCollection.contributionCalendar.weeks[]
+               .contributionDays[]
+               | select(.date == $date)
+               | .contributionCount][0] // 0
+            ' /tmp/pre-march-contributions.json)
+
+            synthetic_count=$(git log --all \
+              --since="${marker}T00:00:00+03:00" \
+              --until="${next_marker}T00:00:00+03:00" \
+              --pretty='%s' | \
+              grep -Ec "^chore: pre-march activity ${marker} " || true)
+
+            observed=$graph_count
+            if (( synthetic_count > observed )); then
+              observed=$synthetic_count
+            fi
+
+            digest=$(printf '%s' "nyc-demand:pre-march:v1:${marker}" | sha256sum | cut -c1-16)
+            gate=$((16#${digest:0:4} % 100))
+            target_seed=$((16#${digest:4:8}))
+
+            if (( weekday <= 5 )); then
+              active_threshold=78
+            else
+              active_threshold=52
+            fi
+
+            active=0
+            target=0
+            if (( gate < active_threshold )); then
+              active=1
+              target=$((1 + target_seed % TARGET_MAX))
+
+              # Keep weekends generally lighter while retaining occasional spikes.
+              if (( weekday >= 6 && target > 61 && gate > 12 )); then
+                target=$((1 + target % 61))
+              fi
+            fi
+
+            if ! grep -q "^${marker}[[:space:]]" docs/pre-march-random-plan.tsv; then
+              printf '%s\t%s\t%s\t%s\n' "$marker" "$active" "$observed" "$target" \
+                >> docs/pre-march-random-plan.tsv
+            fi
+
+            if (( active == 0 )); then
+              echo "${marker}: deterministic rest day."
+            elif (( observed >= target )); then
+              echo "${marker}: observed=${observed}, target=${target}; no top-up required."
+            else
+              remaining=$((target - observed))
+              echo "${marker}: graph=${graph_count}, synthetic=${synthetic_count}, target=${target}, add=${remaining}."
+
+              for offset in $(seq 1 "$remaining"); do
+                total_after=$((observed + offset))
+
+                # Distribute timestamps over 08:00-22:00 with a date-specific jitter.
+                jitter=$((16#${digest:12:4} % 37))
+                minute_of_day=$((480 + (total_after * 840) / (target + 1) + jitter))
+                if (( minute_of_day > 1319 )); then
+                  minute_of_day=1319
+                fi
+                hour=$((minute_of_day / 60))
+                minute=$((minute_of_day % 60))
+                timestamp=$(printf '%sT%02d:%02d:00+03:00' "$marker" "$hour" "$minute")
+
+                printf -- '- %s activity %02d/%02d\n' "$marker" "$total_after" "$target" \
+                  >> docs/pre-march-random-backfill-log.md
+                git add docs/pre-march-random-backfill-log.md docs/pre-march-random-plan.tsv
+
+                GIT_AUTHOR_DATE="$timestamp" \
+                GIT_COMMITTER_DATE="$timestamp" \
+                  git commit -m "chore: pre-march activity ${marker} ${total_after}/${target}"
+
+                total_created=$((total_created + 1))
+                batch_created=$((batch_created + 1))
+
+                if (( batch_created >= 300 )); then
+                  push_progress "${batch_month}-${marker}-checkpoint"
+                  batch_created=0
+                fi
+              done
+            fi
+
+            next_month="${next_marker:0:7}"
+            if [[ "$next_month" != "$batch_month" || "$marker" == "$END_DATE" ]]; then
+              if (( batch_created > 0 )); then
+                push_progress "$batch_month"
+              else
+                echo "Batch ${batch_month}: nothing new to push."
+              fi
+              batch_month="$next_month"
+              batch_created=0
+            fi
+
+            current="$next_marker"
+          done
+
+          echo "Created ${total_created} dated commits in total."
+          echo "Pre-March random backfill completed successfully."
