@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Local configuration
+.env
+.env.*
+!.env.example
+
+# Data and generated artifacts
+data/raw/
+data/interim/
+data/processed/
+data/features/
+artifacts/
+mlruns/
+*.parquet
+*.feather
+*.joblib
+*.pkl
+
+# Reports generated from runs
+reports/figures/*.png
+reports/figures/*.svg
+reports/metrics/*.json
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
