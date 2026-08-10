@@ -60,10 +60,6 @@ def train_pipeline(
         "feature_names": list(fitted.feature_names),
     }
 
-    destination = Path(report_path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
     if use_mlflow:
         payload["mlflow_run_id"] = log_backtest_run(
             folds,
@@ -71,6 +67,9 @@ def train_pipeline(
             tags={"model": "lightgbm", "task": "taxi-zone-demand"},
         )
 
+    destination = Path(report_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return payload
 
 
