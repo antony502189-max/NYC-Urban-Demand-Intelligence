@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime
 from pathlib import Path
 
 import polars as pl
@@ -42,7 +43,13 @@ def build_dataset_range(
             overwrite=overwrite_downloads,
         )
         monthly_output = processed_dir / f"demand_{item.label}.parquet"
-        aggregate_file(raw_path, monthly_output)
+        next_month = item.next()
+        aggregate_file(
+            raw_path,
+            monthly_output,
+            start_time=datetime(item.year, item.month, 1),
+            end_time=datetime(next_month.year, next_month.month, 1),
+        )
         demand_frames.append(pl.read_parquet(monthly_output))
         monthly_outputs.append(str(monthly_output))
 
