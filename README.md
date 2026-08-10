@@ -1,120 +1,171 @@
 # NYC Urban Demand Intelligence
 
 [![CI](https://github.com/antony502189-max/NYC-Urban-Demand-Intelligence/actions/workflows/ci.yml/badge.svg)](https://github.com/antony502189-max/NYC-Urban-Demand-Intelligence/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-Production-oriented data science system for forecasting hourly Yellow Taxi pickup demand across New York City taxi zones.
+Production-oriented data science and ML engineering system for forecasting hourly NYC Yellow Taxi pickup demand by taxi zone at **1h, 6h, and 24h** horizons.
 
-This repository is intentionally structured as an end-to-end forecasting product rather than a single notebook: reproducible TLC ingestion, explicit data-quality contracts, complete hourly demand marts, leakage-safe feature engineering, direct multi-horizon modelling, temporal backtesting, uncertainty calibration, experiment tracking, model persistence, an inference API, containerization, tests, and drift monitoring.
+This is intentionally not a notebook-only project. The repository covers reproducible data ingestion, explicit quality contracts, multi-month dataset builds, temporal/geographic EDA, leakage-safe feature engineering, baseline benchmarking, gradient-boosted forecasting, uncertainty calibration, experiment tracking, SHAP explainability, model persistence, FastAPI serving, Docker packaging, and production monitoring.
 
-## Problem
+## Business problem
 
-Given historical NYC TLC Yellow Taxi trips, forecast the number of pickups in each taxi zone at **1h, 6h, and 24h** horizons.
+Given historical NYC TLC Yellow Taxi trips, estimate future pickup volume for every taxi zone so that an operator can make better decisions about:
 
-Potential operational applications include fleet positioning, driver-supply planning, service-level monitoring, and detection of unusual demand patterns.
+- fleet and driver positioning;
+- supply planning for peak demand;
+- service-level monitoring;
+- zone-level demand anomalies;
+- forecast-risk and uncertainty management.
 
-## Data
+The core target is:
 
-The primary source is NYC Taxi & Limousine Commission Trip Record Data. The pipeline downloads monthly Yellow Taxi Parquet files and keeps large raw/generated datasets outside Git.
-
-Trip-level records are validated before aggregation. Valid rows are transformed into a complete `timestamp × zone_id` hourly grid so that a missing trip record is not confused with an absent observation: true zero-demand hours are represented explicitly.
+```text
+y[z, t] = number of valid Yellow Taxi pickups in zone z during hour t
+```
 
 ## System architecture
 
 ```text
-NYC TLC Parquet
-      |
-      v
-atomic download -> quality validation -> hourly zone demand mart
-                                           |
-                                           v
-                                  historical-only features
-                                           |
-                    +----------------------+----------------------+
-                    |                                             |
-                    v                                             v
-             weekly seasonal baseline                 LightGBM direct models
-                                                            1h / 6h / 24h
-                    |                                             |
-                    +----------------------+----------------------+
-                                           |
-                                           v
-                               expanding-window backtesting
-                                           |
-                         +-----------------+------------------+
-                         |                 |                  |
-                         v                 v                  v
-                    Optuna tuning     conformal bands     MLflow runs
-                         |                 |                  |
-                         +-----------------+------------------+
-                                           |
-                                           v
-                                   versioned model bundle
-                                           |
-                              +------------+------------+
-                              |                         |
-                              v                         v
-                         FastAPI / Docker          PSI monitoring
+Official NYC TLC Parquet + taxi-zone lookup
+                 |
+                 v
+      atomic download / range builder
+                 |
+                 v
+      schema + domain validation
+                 |
+                 v
+      hourly timestamp x zone mart
+                 |
+        +--------+---------+
+        |                  |
+        v                  v
+  temporal EDA       zone metadata
+        |                  |
+        +--------+---------+
+                 |
+                 v
+       historical-only features
+                 |
+    +------------+-------------+
+    |                          |
+    v                          v
+weekly seasonal naive      LightGBM
+    |                     1h / 6h / 24h
+    +------------+-------------+
+                 |
+                 v
+      paired expanding-window CV
+                 |
+     +-----------+------------+-------------+
+     |                        |             |
+     v                        v             v
+ Optuna tuning        conformal bands   SHAP diagnostics
+     |                        |             |
+     +-----------+------------+-------------+
+                 |
+                 v
+          versioned model bundle
+                 |
+        +--------+---------+
+        |                  |
+        v                  v
+ FastAPI / Docker     monitoring reports
+                    PSI + WAPE + bias
 ```
 
 ## Implemented capabilities
 
 ### Data engineering
 
-- reproducible monthly TLC Parquet downloader;
-- explicit schema/domain quality checks with persisted quality reports;
+- atomic downloader for official monthly NYC TLC Yellow Taxi Parquet files;
+- inclusive multi-month range builds with deterministic manifests;
+- explicit schema and domain quality checks;
+- persisted quality reports for every monthly aggregation;
 - hourly pickup-demand aggregation by taxi zone;
-- zero-filled complete hourly zone grid;
-- Parquet-first storage using Polars/PyArrow.
+- complete zero-filled hourly zone grids;
+- deterministic merge of multi-month demand marts;
+- validated taxi-zone reference lookup with borough, zone name, and service-zone metadata;
+- Parquet-first processing with Polars/PyArrow.
 
-### Feature engineering
+### EDA and geographic context
+
+- dataset-level coverage and zero-demand summaries;
+- hourly demand profiles;
+- weekday demand profiles;
+- top-zone ranking with human-readable zone labels;
+- deterministic JSON EDA reports;
+- non-ordinal borough/service-zone one-hot features;
+- safe `Unknown` handling for missing zone metadata.
+
+### Leakage-safe feature engineering
 
 - calendar features;
-- zone-specific demand lags;
-- shifted rolling means and standard deviations;
-- strict historical-only feature construction;
-- direct future targets for 1h/6h/24h models;
-- target columns explicitly excluded from feature inference.
+- per-zone lag features at multiple horizons;
+- shifted rolling means and rolling standard deviations;
+- direct 1h/6h/24h target construction;
+- explicit target/forecast timestamp exclusion from feature inference;
+- validation-label boundary checks so future labels cannot cross into training;
+- no random train/test splitting for forecasting evaluation.
 
 ### Modelling and evaluation
 
-- weekly seasonal-naive benchmark;
+- direct weekly seasonal-naive benchmark for each forecast horizon;
 - LightGBM Poisson demand regression;
 - expanding-window temporal cross-validation;
-- label-boundary safeguards that prevent future validation labels entering training;
-- MAE, RMSE, WAPE and sMAPE;
-- Optuna hyperparameter search using temporal CV;
+- paired model-vs-baseline folds using identical validation rows;
+- MAE, RMSE, WAPE, and sMAPE;
+- fold-level relative improvement over baseline;
+- residual bias and tail-error diagnostics;
+- error tables by taxi zone and demand band;
+- Optuna hyperparameter optimization over temporal backtests;
 - split-conformal prediction intervals;
 - portable LightGBM model bundles with ordered feature metadata.
 
-### Production layer
+### Explainability and reporting
+
+- deterministic global SHAP feature importance;
+- local SHAP contribution explanations;
+- stored-model SHAP report CLI;
+- benchmark-driven model-card generation;
+- model-card sections for intended use, limitations, reproducibility, and explainability.
+
+### Production and MLOps
 
 - MLflow backtest logging;
 - FastAPI `/health` and `/v1/forecast` endpoints;
-- strict online feature contract validation;
-- Docker image for inference;
-- PSI-based numerical drift monitoring;
-- model-card template;
-- GitHub Actions CI with Ruff and pytest.
+- strict online feature-contract validation;
+- Dockerized inference service;
+- PSI-based numerical feature drift monitoring;
+- realized forecast-performance snapshots;
+- daily WAPE, MAE, and bias monitoring;
+- performance-regression severity bands;
+- combined drift + performance monitoring reports;
+- GitHub Actions quality gates: install, compile, Ruff, pytest.
 
 ## Repository layout
 
 ```text
-configs/                       Data/model contracts
-scripts/                       Runnable training workflows
+configs/                       Data and model contracts
+docs/                          Pipeline and CI documentation
+scripts/                       Runnable data/ML/monitoring workflows
 src/nyc_demand/
+  analysis/                    Deterministic EDA summaries
   api/                         FastAPI inference service
-  data/                        Download, validation, aggregation
-  features/                    Leakage-safe feature engineering
-  models/                      Baselines, horizons, training, CV, tuning, intervals
-  monitoring/                  Drift checks
+  data/                        Download, validation, aggregation, range builds
+  features/                    Temporal and zone feature engineering
+  models/                      Baselines, training, CV, tuning, diagnostics, SHAP
+  monitoring/                  PSI and realized-performance monitoring
+  reporting/                   Model-card generation
   tracking/                    MLflow integration
-reports/                       Model card and generated evaluation outputs
-tests/                         Unit/integration tests
-.github/workflows/             CI and manual maintenance workflows
+reports/                       Generated model/evaluation documentation
+tests/                         Unit and integration tests
+.github/workflows/             CI and maintenance workflows
 Dockerfile                     Inference container
 ```
 
-## Quick start
+## Installation
 
 Python 3.11+ is recommended.
 
@@ -125,65 +176,107 @@ python -m venv .venv
 pip install -e ".[ml,api,dev]"
 ```
 
-Download one month of Yellow Taxi data:
+Install MLflow support when needed:
+
+```bash
+pip install -e ".[tracking]"
+```
+
+## Build the dataset
+
+### One month
 
 ```bash
 python -m nyc_demand.data.download --year 2024 --month 1
-```
-
-Aggregate trips into the hourly zone-demand mart:
-
-```bash
 python -m nyc_demand.data.aggregate \
   --input data/raw/yellow_tripdata_2024-01.parquet \
   --output data/processed/demand_2024-01.parquet
 ```
 
-Run the test suite:
+### Multi-month research dataset
 
 ```bash
-pytest
-ruff check src tests
+python scripts/build_dataset.py --start 2024-01 --end 2024-06
 ```
 
-## Train a model
+The range builder creates a merged Parquet mart plus a `*.build.json` manifest containing the month range, monthly outputs, and per-month quality reports.
 
-A training run builds features, executes expanding-window backtests, trains the final direct-horizon model, saves a portable model bundle, and writes a JSON evaluation report.
+## Generate EDA
 
-Example for the six-hour horizon:
+```bash
+python scripts/generate_eda_report.py \
+  --input data/processed/demand_2024-01_to_2024-06.parquet \
+  --output reports/eda/2024-h1.json \
+  --zone-lookup data/reference/taxi_zone_lookup.csv
+```
+
+## Benchmark against the seasonal baseline
+
+```bash
+python scripts/benchmark_model.py \
+  --input data/processed/demand_2024-01_to_2024-06.parquet \
+  --horizon 6 \
+  --output reports/metrics/h6-benchmark.json
+```
+
+The benchmark evaluates LightGBM and weekly seasonal naive on identical temporal validation rows. A production candidate should demonstrate a meaningful improvement rather than merely reporting an isolated model metric.
+
+## Train and persist a model
 
 ```bash
 python scripts/train_model.py \
-  --input data/processed/demand_2024-01.parquet \
+  --input data/processed/demand_2024-01_to_2024-06.parquet \
   --horizon 6 \
   --model-dir artifacts/models/h6 \
   --report reports/metrics/h6.json
 ```
 
-Enable MLflow logging with `--mlflow` after installing the tracking extra:
+With MLflow:
 
 ```bash
-pip install -e ".[ml,tracking]"
 mlflow ui
+python scripts/train_model.py \
+  --input data/processed/demand_2024-01_to_2024-06.parquet \
+  --horizon 6 \
+  --model-dir artifacts/models/h6 \
+  --report reports/metrics/h6.json \
+  --mlflow
+```
+
+## Explain a trained model
+
+```bash
+python scripts/explain_model.py \
+  --model-dir artifacts/models/h6 \
+  --features data/features/h6.parquet \
+  --output reports/explainability/h6-shap.json
+```
+
+Then render a model card from real run artifacts:
+
+```bash
+python scripts/render_model_card.py \
+  --model-dir artifacts/models/h6 \
+  --benchmark reports/metrics/h6-benchmark.json \
+  --shap reports/explainability/h6-shap.json \
+  --output reports/model-card-h6.md
 ```
 
 ## Serve a trained model
-
-Point the service at a saved model bundle:
 
 ```bash
 export NYC_DEMAND_MODEL_DIR=artifacts/models/h6
 uvicorn nyc_demand.api.app:app --host 0.0.0.0 --port 8000
 ```
 
-Windows PowerShell:
+PowerShell:
 
 ```powershell
 $env:NYC_DEMAND_MODEL_DIR="artifacts/models/h6"
 uvicorn nyc_demand.api.app:app --host 0.0.0.0 --port 8000
 ```
 
-The low-level inference endpoint consumes the exact numeric feature contract stored with the model bundle. This prevents silent feature-order mismatches between training and serving.
+The inference endpoint accepts the exact numeric feature contract stored with the model bundle. This intentionally prevents silent feature-order mismatches between training and serving.
 
 ## Docker
 
@@ -195,58 +288,95 @@ docker run --rm -p 8000:8000 \
   nyc-demand-api
 ```
 
+## Production monitoring
+
+Given scored reference and current windows containing actuals, predictions, and monitored numeric features:
+
+```bash
+python scripts/monitor_model.py \
+  --reference data/monitoring/reference.parquet \
+  --current data/monitoring/current.parquet \
+  --features demand_lag_1h,demand_lag_24h,demand_roll_mean_24h \
+  --output reports/monitoring/current.json
+```
+
+The report combines:
+
+- PSI feature-distribution drift;
+- realized WAPE/MAE/RMSE/sMAPE;
+- forecast bias;
+- p90 absolute error;
+- reference-vs-current performance degradation;
+- an overall `stable`, `watch`, or `critical` status.
+
 ## Leakage contract
 
-For zone `z`, target hour `t`, and forecast origin `o`, every input feature must be computable from information available at or before the origin. Random train/test splitting is prohibited.
+For forecast origin `o` and future target timestamp `t`, every feature must be computable using information available at or before `o`.
 
-For direct multi-horizon validation, training rows are additionally removed when their **future label timestamp crosses the validation boundary**. This avoids a less obvious form of label leakage that can survive otherwise chronological splitting.
+Two safeguards are enforced:
+
+1. lag/rolling features are shifted so the current target observation cannot enter its own predictors;
+2. training rows are removed when their future label timestamp crosses the validation boundary.
+
+This second condition matters for direct multi-horizon models and is easy to miss even with otherwise chronological splitting.
 
 ## Evaluation contract
 
-Every candidate model must beat or justify itself against a weekly seasonal-naive benchmark. Metrics are recorded per fold and horizon, then aggregated across expanding-window validation folds.
+A candidate model is evaluated against the weekly seasonal baseline using expanding-window validation and identical validation rows.
 
 Primary metrics:
 
-- **MAE** — absolute error in trips;
-- **RMSE** — emphasizes large misses;
-- **WAPE** — volume-normalized operational error;
-- **sMAPE** — scale-normalized symmetric percentage error.
+- **MAE** — error measured directly in trips;
+- **RMSE** — increases the penalty for large misses;
+- **WAPE** — operational error normalized by observed volume;
+- **sMAPE** — symmetric percentage-style scale normalization.
 
-## Uncertainty and monitoring
+Model selection should consider aggregate metrics, zone-level failure modes, demand-band errors, uncertainty coverage, and stability across folds.
 
-Point forecasts can be wrapped with split-conformal intervals calibrated from held-out residuals. Coverage is a property to verify on future samples, not merely a configuration value.
+## Run quality gates locally
 
-Production monitoring currently includes Population Stability Index (PSI) utilities for numerical feature drift. The model card specifies additional monitoring requirements for missingness, prediction drift, realized error, API reliability, and feature-contract compatibility.
+```bash
+python -m compileall -q src tests scripts
+ruff check src tests
+pytest --cov=nyc_demand --cov-report=term-missing
+```
 
-## Current roadmap
+The same sequence runs in GitHub Actions before feature branches are merged.
 
-Completed foundation:
+## Current status
 
-- [x] ingestion and quality contracts
-- [x] complete hourly demand mart
-- [x] leakage-safe lag/rolling features
-- [x] seasonal baseline
-- [x] temporal CV
-- [x] LightGBM model layer
+Implemented:
+
+- [x] official TLC ingestion and quality contracts
+- [x] single- and multi-month demand marts
+- [x] temporal and zone EDA
+- [x] taxi-zone categorical context
+- [x] leakage-safe temporal features
 - [x] direct 1h/6h/24h targets
+- [x] weekly seasonal baseline
+- [x] paired temporal benchmarking
+- [x] LightGBM model layer
 - [x] Optuna tuning
 - [x] conformal intervals
+- [x] residual and segment diagnostics
 - [x] MLflow logging
+- [x] SHAP explainability
+- [x] model-card generation
 - [x] model persistence
-- [x] FastAPI service
+- [x] FastAPI serving
 - [x] Docker packaging
 - [x] PSI drift monitoring
-- [x] CI and automated tests
+- [x] realized-performance monitoring
+- [x] CI quality gates and automated tests
 
-Next research layer:
+Next research extensions:
 
-- [ ] multi-month EDA and demand-regime analysis
-- [ ] weather and holiday/event covariates
-- [ ] taxi-zone adjacency/geospatial features
-- [ ] SHAP diagnostics generated from trained production candidates
-- [ ] benchmark CatBoost/XGBoost alternatives
-- [ ] automated model comparison/model-card generation
-- [ ] production-grade feature retrieval rather than client-supplied feature vectors
+- [ ] weather covariates;
+- [ ] public-holiday and major-event features;
+- [ ] true taxi-zone adjacency/geometry features from TLC shapefiles;
+- [ ] CatBoost/XGBoost challenger models;
+- [ ] production feature retrieval instead of client-supplied feature vectors;
+- [ ] published real-data benchmark artifacts for all three horizons.
 
 ## License
 
