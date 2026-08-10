@@ -1,0 +1,123 @@
+name: Research benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_month:
+        description: First TLC month (YYYY-MM)
+        required: true
+        default: "2024-01"
+        type: string
+      end_month:
+        description: Last TLC month (YYYY-MM)
+        required: true
+        default: "2024-06"
+        type: string
+      horizon:
+        description: Forecast horizon in hours
+        required: true
+        default: "6"
+        type: choice
+        options:
+          - "1"
+          - "6"
+          - "24"
+
+permissions:
+  contents: read
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      START_MONTH: ${{ inputs.start_month }}
+      END_MONTH: ${{ inputs.end_month }}
+      HORIZON: ${{ inputs.horizon }}
+      DATASET_PATH: data/processed/research-demand.parquet
+      FEATURES_PATH: data/features/research-features.parquet
+      MODEL_DIR: artifacts/models/research
+      REPORT_DIR: reports/research
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install research dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[ml,api,dev]"
+
+      - name: Build multi-month demand dataset
+        run: |
+          python scripts/build_dataset.py \
+            --start "$START_MONTH" \
+            --end "$END_MONTH" \
+            --output "$DATASET_PATH"
+
+      - name: Download and validate taxi-zone lookup
+        run: |
+          python -c "from nyc_demand.data.zones import download_zone_lookup; print(download_zone_lookup())"
+
+      - name: Generate deterministic EDA report
+        run: |
+          mkdir -p "$REPORT_DIR"
+          python scripts/generate_eda_report.py \
+            --input "$DATASET_PATH" \
+            --zone-lookup data/reference/taxi_zone_lookup.csv \
+            --output "$REPORT_DIR/eda.json"
+
+      - name: Materialize leakage-safe features
+        run: |
+          python scripts/build_features.py \
+            --input "$DATASET_PATH" \
+            --output "$FEATURES_PATH"
+
+      - name: Benchmark model against seasonal naive
+        run: |
+          python scripts/benchmark_model.py \
+            --input "$DATASET_PATH" \
+            --horizon "$HORIZON" \
+            --output "$REPORT_DIR/benchmark.json"
+
+      - name: Train final horizon model
+        run: |
+          python scripts/train_model.py \
+            --input "$DATASET_PATH" \
+            --horizon "$HORIZON" \
+            --model-dir "$MODEL_DIR" \
+            --report "$REPORT_DIR/training.json"
+
+      - name: Generate SHAP explanation report
+        run: |
+          python scripts/explain_model.py \
+            --model-dir "$MODEL_DIR" \
+            --features "$FEATURES_PATH" \
+            --output "$REPORT_DIR/shap.json" \
+            --max-rows 5000 \
+            --top-n 30
+
+      - name: Render model card from real artifacts
+        run: |
+          python scripts/render_model_card.py \
+            --model-dir "$MODEL_DIR" \
+            --benchmark "$REPORT_DIR/benchmark.json" \
+            --shap "$REPORT_DIR/shap.json" \
+            --output "$REPORT_DIR/model-card.md"
+
+      - name: Publish research artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nyc-demand-${{ inputs.start_month }}-${{ inputs.end_month }}-h${{ inputs.horizon }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            reports/research/
+            artifacts/models/research/
+            data/processed/research-demand.build.json
