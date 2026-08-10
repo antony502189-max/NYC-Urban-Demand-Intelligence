@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import numpy as np
 import polars as pl
 
 
-NON_FEATURE_COLUMNS = frozenset({"timestamp", "demand"})
+NON_FEATURE_COLUMNS = frozenset({"timestamp", "forecast_timestamp", "demand", "target_demand"})
 
 
 @dataclass(frozen=True)
@@ -20,11 +21,16 @@ class TrainingMatrix(FeatureMatrix):
     target: np.ndarray
 
 
-def infer_feature_columns(frame: pl.DataFrame) -> tuple[str, ...]:
-    """Infer numeric model features while excluding timestamp and target columns."""
+def infer_feature_columns(
+    frame: pl.DataFrame,
+    *,
+    excluded_columns: Iterable[str] = (),
+) -> tuple[str, ...]:
+    """Infer numeric model features while excluding identifiers and target columns."""
+    excluded = NON_FEATURE_COLUMNS.union(excluded_columns)
     columns: list[str] = []
     for name, dtype in frame.schema.items():
-        if name in NON_FEATURE_COLUMNS:
+        if name in excluded:
             continue
         if dtype.is_numeric():
             columns.append(name)
@@ -70,7 +76,10 @@ def build_training_matrix(
     if target_column not in frame.columns:
         raise ValueError(f"Missing target column: {target_column}")
 
-    selected = feature_columns or infer_feature_columns(frame)
+    selected = feature_columns or infer_feature_columns(
+        frame,
+        excluded_columns=(target_column,),
+    )
     missing = set(selected).difference(frame.columns)
     if missing:
         raise ValueError(f"Missing feature columns: {', '.join(sorted(missing))}")
